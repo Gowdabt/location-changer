@@ -1,0 +1,19 @@
+{
+  "name": "@location-changer/adapter-ios",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"No lint configured for iOS adapter\""
+  },
+  "dependencies": {
+    "@location-changer/core": "0.1.0",
+    "@location-changer/diagnostics": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "typescript": "^6.0.2"
+  }
+}

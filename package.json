@@ -1,0 +1,21 @@
+{
+  "name": "location-changer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local desktop location simulation tool",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "packages/adapters/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/desktop",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
