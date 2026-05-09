@@ -58,6 +58,25 @@ ensure_adb() {
   fi
 }
 
+ensure_tunneld() {
+  if pgrep -f "python3 -m pymobiledevice3 remote tunneld" >/dev/null 2>&1; then
+    echo "pymobiledevice3 tunneld is already running."
+    return
+  fi
+
+  echo "Starting pymobiledevice3 tunneld in background..."
+  mkdir -p .logs
+  sudo nohup python3 -m pymobiledevice3 remote tunneld > .logs/tunneld.log 2>&1 &
+  sleep 2
+
+  if pgrep -f "python3 -m pymobiledevice3 remote tunneld" >/dev/null 2>&1; then
+    echo "tunneld started successfully."
+  else
+    echo "Failed to start tunneld. Check logs at .logs/tunneld.log"
+    exit 1
+  fi
+}
+
 if [ ! -d "node_modules" ]; then
   echo "Installing dependencies..."
   npm install
@@ -66,6 +85,7 @@ fi
 ensure_xcode
 ensure_pymobiledevice3
 ensure_adb
+ensure_tunneld
 
 echo "Starting Location Changer app..."
 npm run dev
