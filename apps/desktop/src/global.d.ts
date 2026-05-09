@@ -22,6 +22,22 @@ declare global {
           android: { connected: boolean; authorized: boolean; ready: boolean; deviceId: string | null };
         };
       }>;
+      health: () => Promise<{
+        environment: {
+          hostPlatform: string;
+          autoPlatform: "ios" | "android";
+          detected: {
+            ios: { connected: boolean; authorized: boolean; ready: boolean; deviceId: string | null };
+            android: { connected: boolean; authorized: boolean; ready: boolean; deviceId: string | null };
+          };
+        };
+        checks: {
+          ios: Array<{ key: string; ok: boolean; message: string; fixHint?: string }>;
+          android: Array<{ key: string; ok: boolean; message: string; fixHint?: string }>;
+        };
+        services: { tunneld: boolean };
+      }>;
+      repairAction: (action: string) => Promise<{ ok: boolean; message: string }>;
       runCommand: (command: Record<string, unknown> & { platform?: "ios" | "android" }) => Promise<{ ok: boolean }>;
       loadPresets: () => Promise<{
         places: Array<{ id: string; name: string; point: { lat: number; lng: number } }>;
@@ -32,7 +48,12 @@ declare global {
         }>;
       }>;
       savePresets: (payload: unknown) => Promise<{ ok: boolean }>;
+      exportPresets: (payload: unknown) => Promise<{ ok: boolean; path?: string }>;
+      importPresets: () => Promise<{ ok: boolean; payload?: unknown }>;
+      loadSettings: () => Promise<unknown>;
+      saveSettings: (payload: unknown) => Promise<{ ok: boolean }>;
       readLogs: () => Promise<string[]>;
+      exportDiagnostics: () => Promise<{ ok: boolean; path?: string }>;
     };
   }
 }

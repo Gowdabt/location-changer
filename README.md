@@ -10,9 +10,59 @@ Local desktop app for iOS/iPadOS and Android developer/testing location simulati
 - Android adapter package (`packages/adapters/android`) with emulator-first adb geo support
 - Preset storage package (`packages/storage`)
 - Diagnostics logger package (`packages/diagnostics`)
-- Desktop setup checks for `xcrun` and `pymobiledevice3`
-- Diagnostics panel + persisted logs
-- Saved places
+- Embedded OpenStreetMap picker with click-to-teleport and route polyline preview
+- Saved places and saved routes with delete/import/export
+- Toast/error center for command outcomes
+- Connection health panel + tunnel repair actions
+- Session settings persistence (platform mode, theme, map state, drafts)
+- Diagnostics timeline filtering + diagnostics bundle export
+
+## Architecture Diagram
+
+```mermaid
+flowchart LR
+  uiReact[ReactUi App.tsx] --> ipcClient[PreloadBridge preload.cjs]
+  ipcClient --> mainHandlers[ElectronMain main.cjs]
+
+  mainHandlers --> commandRuntime[CommandRuntime runtime.cjs]
+  mainHandlers --> envSvc[EnvironmentAndHealth]
+  mainHandlers --> storageSvc[PresetsAndSettingsStore]
+  mainHandlers --> diagnosticsSvc[DiagnosticsAndBundles]
+
+  commandRuntime --> iosRunner[pymobiledevice3Commands]
+  commandRuntime --> androidRunner[adbCommands]
+  envSvc --> tunnelCheck[TunneldStatusAndRepair]
+  envSvc --> setupChecks[ToolchainChecks]
+
+  storageSvc --> presetsFile[presets.json]
+  storageSvc --> settingsFile[settings.json]
+  diagnosticsSvc --> appLog[logs/app.log]
+  diagnosticsSvc --> bundleOut[diagnostics/bundle-*.json]
+```
+
+## Command Flow
+
+```mermaid
+flowchart TD
+  userAction[UserClicks SetOrRoute] --> uiState[UiValidatesAndBuildsCommand]
+  uiState --> ipcInvoke[window.locationApp.runCommand]
+  ipcInvoke --> mainRoute[ipcMain app:runCommand]
+  mainRoute --> runtimePolicy[runCommand with timeout retry guard]
+  runtimePolicy --> platformPick{Platform}
+  platformPick -->|ios| iosExec[pymobiledevice3 developer dvt]
+  platformPick -->|android| adbExec[adb emu geo fix]
+  iosExec --> resultEval[ParseOutputAndSuccessChecks]
+  adbExec --> resultEval
+  resultEval --> logWrite[appendLog sanitized]
+  resultEval --> uiFeedback[Toast SuccessOrError]
+```
+
+## Data Flow and Persistence
+
+- `presets.json`: saved places and saved route templates
+- `settings.json`: platform mode, theme, map center/zoom, last teleport and route draft, onboarding state, compact mode
+- `app.log`: structured command and health events (sanitized IDs)
+- `diagnostics/bundle-*.json`: exported support snapshots (environment + settings + logs + app metadata)
 
 ## Prerequisites (Mac)
 
@@ -46,6 +96,32 @@ Local desktop app for iOS/iPadOS and Android developer/testing location simulati
 cd /Users/hbt/HarshithGowda/Apps/location-changer
 ./start.sh
 ```
+
+## Test commands
+
+```bash
+npm test
+```
+
+## Packaging and release
+
+- Unsigned local DMG:
+  - `npm run dist:mac:unsigned -w apps/desktop`
+- Standard DMG build:
+  - `npm run dist:mac -w apps/desktop`
+- Signing/notarization prep docs:
+  - see [`docs/release-signing-macos.md`](docs/release-signing-macos.md)
+
+## Troubleshooting
+
+- iOS detected but location not applied:
+  - ensure tunnel is running: `sudo python3 -m pymobiledevice3 remote tunneld`
+- `No such option: --lat`:
+  - update app to latest commit; current app uses positional args
+- Android route not applying:
+  - this phase supports emulator geo fix path (`adb emu geo fix`)
+- Check diagnostics:
+  - use in-app Diagnostics panel and export bundle
 
 ## Build all workspaces
 

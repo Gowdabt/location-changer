@@ -12,7 +12,7 @@
     "dev": "npm run dev -w apps/desktop",
     "build": "npm run build --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present && node --test apps/desktop/electron/runtime.test.cjs"
   },
   "engines": {
     "node": ">=20"
