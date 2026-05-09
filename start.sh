@@ -64,9 +64,12 @@ ensure_tunneld() {
     return
   fi
 
+  echo "Authenticating sudo for tunneld startup..."
+  sudo -v
+
   echo "Starting pymobiledevice3 tunneld in background..."
   mkdir -p .logs
-  sudo nohup python3 -m pymobiledevice3 remote tunneld > .logs/tunneld.log 2>&1 &
+  sudo -n nohup python3 -m pymobiledevice3 remote tunneld > .logs/tunneld.log 2>&1 &
   sleep 2
 
   if pgrep -f "python3 -m pymobiledevice3 remote tunneld" >/dev/null 2>&1; then
