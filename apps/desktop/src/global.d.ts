@@ -3,10 +3,10 @@ export {};
 declare global {
   interface Window {
     locationApp: {
-      setupChecks: () => Promise<
+      setupChecks: (platform?: "ios" | "android") => Promise<
         Array<{ key: string; ok: boolean; message: string; fixHint?: string }>
       >;
-      status: () => Promise<{
+      status: (platform?: "ios" | "android") => Promise<{
         connected: boolean;
         authorized: boolean;
         ready: boolean;
@@ -14,7 +14,7 @@ declare global {
         deviceId?: string;
         message?: string;
       }>;
-      runCommand: (command: Record<string, unknown>) => Promise<{ ok: boolean }>;
+      runCommand: (command: Record<string, unknown> & { platform?: "ios" | "android" }) => Promise<{ ok: boolean }>;
       loadPresets: () => Promise<{
         places: Array<{ id: string; name: string; point: { lat: number; lng: number } }>;
         routes: Array<{

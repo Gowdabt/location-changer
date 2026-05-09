@@ -5,6 +5,7 @@ const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_PLATFORM = "ios";
 
 const state = {
   timer: null,
@@ -46,7 +47,7 @@ async function appendLog(level, source, message, context = undefined) {
   await fs.appendFile(logFile, `${JSON.stringify(payload)}\n`, "utf-8");
 }
 
-async function runSetupChecks() {
+async function runIosSetupChecks() {
   const [xcrun, pymobiledevice3] = await Promise.all([
     hasCommand("xcrun"),
     hasCommand("pymobiledevice3"),
@@ -67,6 +68,24 @@ async function runSetupChecks() {
   ];
 }
 
+async function runAndroidSetupChecks() {
+  const adb = await hasCommand("adb");
+  return [
+    {
+      key: "adb",
+      ok: adb,
+      message: "Android platform tools (adb) are required",
+      fixHint: "Install Android platform tools and ensure adb is on PATH",
+    },
+    {
+      key: "android-mode",
+      ok: true,
+      message: "Android support is emulator-first in this phase",
+      fixHint: "Use an emulator for reliable geo fix support",
+    },
+  ];
+}
+
 async function resolveDeviceId() {
   try {
     const { stdout } = await execFileAsync("pymobiledevice3", ["usbmux", "list"]);
@@ -83,8 +102,8 @@ async function resolveDeviceId() {
   }
 }
 
-async function getDeviceStatus() {
-  const checks = await runSetupChecks();
+async function getIosDeviceStatus() {
+  const checks = await runIosSetupChecks();
   const deviceId = await resolveDeviceId();
   const ready = checks.every((check) => check.ok) && Boolean(deviceId);
   return {
@@ -97,7 +116,47 @@ async function getDeviceStatus() {
   };
 }
 
-async function applyPoint(point) {
+async function resolveAndroidDevice() {
+  try {
+    const { stdout } = await execFileAsync("adb", ["devices"]);
+    const lines = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("List of devices"));
+    const firstDevice = lines.find((line) => line.endsWith("\tdevice"));
+    const unauthorized = lines.find((line) => line.endsWith("\tunauthorized"));
+    if (firstDevice) {
+      return { deviceId: firstDevice.split("\t")[0], state: "device" };
+    }
+    if (unauthorized) {
+      return { deviceId: unauthorized.split("\t")[0], state: "unauthorized" };
+    }
+    return { deviceId: null, state: "none" };
+  } catch {
+    return { deviceId: null, state: "none" };
+  }
+}
+
+async function getAndroidDeviceStatus() {
+  const checks = await runAndroidSetupChecks();
+  const { deviceId, state } = await resolveAndroidDevice();
+  const ready = checks.every((check) => check.ok) && state === "device";
+  return {
+    connected: state !== "none",
+    authorized: state === "device",
+    ready,
+    platform: "android",
+    deviceId: deviceId || undefined,
+    message:
+      state === "unauthorized"
+        ? "Authorize adb debugging on Android device"
+        : ready
+          ? "Android device ready (emulator-first mode)"
+          : "Connect an Android device or emulator",
+  };
+}
+
+async function applyIosPoint(point) {
   await execFileAsync("pymobiledevice3", [
     "developer",
     "dvt",
@@ -111,7 +170,7 @@ async function applyPoint(point) {
   await appendLog("info", "ios-main", "Applied simulated point", point);
 }
 
-async function clearLocation() {
+async function clearIosLocation() {
   try {
     await execFileAsync("pymobiledevice3", [
       "developer",
@@ -124,6 +183,29 @@ async function clearLocation() {
   }
 }
 
+async function applyAndroidPoint(point) {
+  const { deviceId } = await resolveAndroidDevice();
+  if (!deviceId) {
+    throw new Error("No Android device is available via adb");
+  }
+  try {
+    await execFileAsync("adb", [
+      "-s",
+      deviceId,
+      "emu",
+      "geo",
+      "fix",
+      `${point.lng}`,
+      `${point.lat}`,
+    ]);
+  } catch {
+    throw new Error(
+      "Android geo fix failed. This phase supports emulator-style geo simulation via adb emu geo fix.",
+    );
+  }
+  await appendLog("info", "android-main", "Applied simulated point", point);
+}
+
 function stopRouteTimer() {
   if (state.timer) {
     clearInterval(state.timer);
@@ -131,7 +213,7 @@ function stopRouteTimer() {
   }
 }
 
-function startRouteTimer() {
+function startRouteTimer(platform) {
   stopRouteTimer();
   state.timer = setInterval(async () => {
     if (state.paused || state.route.length === 0) {
@@ -142,9 +224,17 @@ function startRouteTimer() {
       return;
     }
     try {
-      await applyPoint(point);
+      if (platform === "android") {
+        await applyAndroidPoint(point);
+      } else {
+        await applyIosPoint(point);
+      }
     } catch (error) {
-      await appendLog("error", "ios-main", error.message || "Failed to apply route point");
+      await appendLog(
+        "error",
+        `${platform}-main`,
+        error.message || "Failed to apply route point",
+      );
     }
     const atLast = state.cursor === state.route.length - 1;
     if (atLast && !state.loop) {
@@ -175,11 +265,20 @@ async function createWindow() {
   }
 }
 
-ipcMain.handle("app:setupChecks", async () => runSetupChecks());
-ipcMain.handle("app:status", async () => getDeviceStatus());
+ipcMain.handle("app:setupChecks", async (_event, platform = DEFAULT_PLATFORM) => {
+  return platform === "android" ? runAndroidSetupChecks() : runIosSetupChecks();
+});
+ipcMain.handle("app:status", async (_event, platform = DEFAULT_PLATFORM) => {
+  return platform === "android" ? getAndroidDeviceStatus() : getIosDeviceStatus();
+});
 ipcMain.handle("app:runCommand", async (_event, command) => {
+  const platform = command.platform || DEFAULT_PLATFORM;
   if (command.kind === "setPoint") {
-    await applyPoint(command.point);
+    if (platform === "android") {
+      await applyAndroidPoint(command.point);
+    } else {
+      await applyIosPoint(command.point);
+    }
     return { ok: true };
   }
   if (command.kind === "startRoute") {
@@ -188,8 +287,8 @@ ipcMain.handle("app:runCommand", async (_event, command) => {
     state.loop = Boolean(command.route.loop);
     state.tickMs = Number(command.route.tickMs || 1000);
     state.paused = false;
-    startRouteTimer();
-    await appendLog("info", "ios-main", "Route simulation started", {
+    startRouteTimer(platform);
+    await appendLog("info", `${platform}-main`, "Route simulation started", {
       points: state.route.length,
       loop: state.loop,
       tickMs: state.tickMs,
@@ -209,8 +308,10 @@ ipcMain.handle("app:runCommand", async (_event, command) => {
     state.route = [];
     state.cursor = 0;
     state.paused = false;
-    await clearLocation();
-    await appendLog("info", "ios-main", "Route simulation stopped");
+    if (platform === "ios") {
+      await clearIosLocation();
+    }
+    await appendLog("info", `${platform}-main`, "Route simulation stopped");
     return { ok: true };
   }
   throw new Error("Unknown command");

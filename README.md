@@ -1,13 +1,13 @@
 # Location Changer (Mac Phase 1 - iOS First)
 
-Local desktop app for iOS/iPadOS developer/testing location simulation, built with an adapter-first architecture so Android and Windows can be added with minimal core rewrites.
+Local desktop app for iOS/iPadOS and Android developer/testing location simulation, built with an adapter-first architecture so Windows can be added with minimal core rewrites.
 
 ## What is implemented
 
 - Electron + React desktop app (`apps/desktop`)
 - Core command contracts and simulation engine (`packages/core`)
 - iOS adapter package (`packages/adapters/ios`) for teleport/route/stop command handling
-- Android adapter placeholder (`packages/adapters/android`) for next stream
+- Android adapter package (`packages/adapters/android`) with emulator-first adb geo support
 - Preset storage package (`packages/storage`)
 - Diagnostics logger package (`packages/diagnostics`)
 - Desktop setup checks for `xcrun` and `pymobiledevice3`
@@ -22,6 +22,9 @@ Local desktop app for iOS/iPadOS developer/testing location simulation, built wi
 - Python 3 + iOS developer tooling:
   - `pip3 install pymobiledevice3`
 - iPhone/iPad connected and trusted by the Mac
+- Android platform tools:
+  - `adb` available on PATH
+- Android emulator (recommended for geo fix support in this phase)
 
 ## Run locally
 

@@ -19,6 +19,7 @@ type Presets = {
 const initialPresets: Presets = { places: [], routes: [] };
 
 function App() {
+  const [platform, setPlatform] = useState<"ios" | "android">("ios");
   const [status, setStatus] = useState<DeviceStatus | null>(null);
   const [checks, setChecks] = useState<SetupCheck[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
@@ -34,8 +35,8 @@ function App() {
 
   const refresh = async () => {
     const [statusValue, checksValue, logsValue, presetsValue] = await Promise.all([
-      window.locationApp.status(),
-      window.locationApp.setupChecks(),
+      window.locationApp.status(platform),
+      window.locationApp.setupChecks(platform),
       window.locationApp.readLogs(),
       window.locationApp.loadPresets(),
     ]);
@@ -47,10 +48,10 @@ function App() {
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [platform]);
 
   const runTeleport = async () => {
-    await window.locationApp.runCommand({ kind: "setPoint", point: parsedPoint });
+    await window.locationApp.runCommand({ platform, kind: "setPoint", point: parsedPoint });
     await refresh();
   };
 
@@ -64,6 +65,7 @@ function App() {
         return { lat: latValue, lng: lngValue };
       });
     await window.locationApp.runCommand({
+      platform,
       kind: "startRoute",
       route: { points, tickMs, loop: loopRoute, speedPreset: "walk" },
     });
@@ -82,8 +84,14 @@ function App() {
   return (
     <main className="layout">
       <header className="header">
-        <h1>Location Changer (Mac Phase 1 - iOS First)</h1>
-        <button onClick={() => void refresh()}>Refresh</button>
+        <h1>Location Changer (Mac)</h1>
+        <div className="inline">
+          <select value={platform} onChange={(e) => setPlatform(e.target.value as "ios" | "android")}>
+            <option value="ios">iOS / iPadOS</option>
+            <option value="android">Android</option>
+          </select>
+          <button onClick={() => void refresh()}>Refresh</button>
+        </div>
       </header>
 
       <section className="card">
@@ -140,9 +148,9 @@ function App() {
           </label>
           <div className="actions">
             <button onClick={() => void runRoute()}>Start Route</button>
-            <button onClick={() => void window.locationApp.runCommand({ kind: "pause" })}>Pause</button>
-            <button onClick={() => void window.locationApp.runCommand({ kind: "resume" })}>Resume</button>
-            <button onClick={() => void window.locationApp.runCommand({ kind: "stop" })}>Stop</button>
+            <button onClick={() => void window.locationApp.runCommand({ platform, kind: "pause" })}>Pause</button>
+            <button onClick={() => void window.locationApp.runCommand({ platform, kind: "resume" })}>Resume</button>
+            <button onClick={() => void window.locationApp.runCommand({ platform, kind: "stop" })}>Stop</button>
           </div>
         </div>
       </section>
