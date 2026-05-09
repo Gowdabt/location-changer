@@ -14,6 +14,14 @@ declare global {
         deviceId?: string;
         message?: string;
       }>;
+      environment: () => Promise<{
+        hostPlatform: string;
+        autoPlatform: "ios" | "android";
+        detected: {
+          ios: { connected: boolean; authorized: boolean; ready: boolean; deviceId: string | null };
+          android: { connected: boolean; authorized: boolean; ready: boolean; deviceId: string | null };
+        };
+      }>;
       runCommand: (command: Record<string, unknown> & { platform?: "ios" | "android" }) => Promise<{ ok: boolean }>;
       loadPresets: () => Promise<{
         places: Array<{ id: string; name: string; point: { lat: number; lng: number } }>;

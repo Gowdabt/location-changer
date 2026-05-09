@@ -10,6 +10,14 @@ type DeviceStatus = {
   deviceId?: string;
   message?: string;
 };
+type EnvironmentInfo = {
+  hostPlatform: string;
+  autoPlatform: "ios" | "android";
+  detected: {
+    ios: { connected: boolean; authorized: boolean; ready: boolean; deviceId: string | null };
+    android: { connected: boolean; authorized: boolean; ready: boolean; deviceId: string | null };
+  };
+};
 type GeoPoint = { lat: number; lng: number };
 type Presets = {
   places: Array<{ id: string; name: string; point: GeoPoint }>;
@@ -19,7 +27,9 @@ type Presets = {
 const initialPresets: Presets = { places: [], routes: [] };
 
 function App() {
-  const [platform, setPlatform] = useState<"ios" | "android">("ios");
+  const [platformMode, setPlatformMode] = useState<"auto" | "ios" | "android">("auto");
+  const [activePlatform, setActivePlatform] = useState<"ios" | "android">("ios");
+  const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
   const [status, setStatus] = useState<DeviceStatus | null>(null);
   const [checks, setChecks] = useState<SetupCheck[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
@@ -34,12 +44,16 @@ function App() {
   const parsedPoint = useMemo(() => ({ lat: Number(lat), lng: Number(lng) }), [lat, lng]);
 
   const refresh = async () => {
+    const env = await window.locationApp.environment();
+    const targetPlatform = platformMode === "auto" ? env.autoPlatform : platformMode;
     const [statusValue, checksValue, logsValue, presetsValue] = await Promise.all([
-      window.locationApp.status(platform),
-      window.locationApp.setupChecks(platform),
+      window.locationApp.status(targetPlatform),
+      window.locationApp.setupChecks(targetPlatform),
       window.locationApp.readLogs(),
       window.locationApp.loadPresets(),
     ]);
+    setEnvironment(env);
+    setActivePlatform(targetPlatform);
     setStatus(statusValue);
     setChecks(checksValue);
     setLogs(logsValue);
@@ -48,10 +62,10 @@ function App() {
 
   useEffect(() => {
     void refresh();
-  }, [platform]);
+  }, [platformMode]);
 
   const runTeleport = async () => {
-    await window.locationApp.runCommand({ platform, kind: "setPoint", point: parsedPoint });
+    await window.locationApp.runCommand({ platform: activePlatform, kind: "setPoint", point: parsedPoint });
     await refresh();
   };
 
@@ -65,7 +79,7 @@ function App() {
         return { lat: latValue, lng: lngValue };
       });
     await window.locationApp.runCommand({
-      platform,
+      platform: activePlatform,
       kind: "startRoute",
       route: { points, tickMs, loop: loopRoute, speedPreset: "walk" },
     });
@@ -86,7 +100,8 @@ function App() {
       <header className="header">
         <h1>Location Changer (Mac)</h1>
         <div className="inline">
-          <select value={platform} onChange={(e) => setPlatform(e.target.value as "ios" | "android")}>
+          <select value={platformMode} onChange={(e) => setPlatformMode(e.target.value as "auto" | "ios" | "android")}>
+            <option value="auto">Auto Detect Device</option>
             <option value="ios">iOS / iPadOS</option>
             <option value="android">Android</option>
           </select>
@@ -96,6 +111,13 @@ function App() {
 
       <section className="card">
         <h2>Device Status</h2>
+        <p>
+          Host: <strong>{environment?.hostPlatform ?? "unknown"}</strong> | Active platform: <strong>{activePlatform}</strong>
+        </p>
+        <p>
+          Detected iOS: {String(environment?.detected.ios.connected ?? false)} | Detected Android:{" "}
+          {String(environment?.detected.android.connected ?? false)}
+        </p>
         <p>{status?.message ?? "Loading..."}</p>
         <div className="pillRow">
           <span className={`pill ${status?.connected ? "ok" : "bad"}`}>Connected: {String(status?.connected)}</span>
@@ -148,9 +170,9 @@ function App() {
           </label>
           <div className="actions">
             <button onClick={() => void runRoute()}>Start Route</button>
-            <button onClick={() => void window.locationApp.runCommand({ platform, kind: "pause" })}>Pause</button>
-            <button onClick={() => void window.locationApp.runCommand({ platform, kind: "resume" })}>Resume</button>
-            <button onClick={() => void window.locationApp.runCommand({ platform, kind: "stop" })}>Stop</button>
+            <button onClick={() => void window.locationApp.runCommand({ platform: activePlatform, kind: "pause" })}>Pause</button>
+            <button onClick={() => void window.locationApp.runCommand({ platform: activePlatform, kind: "resume" })}>Resume</button>
+            <button onClick={() => void window.locationApp.runCommand({ platform: activePlatform, kind: "stop" })}>Stop</button>
           </div>
         </div>
       </section>

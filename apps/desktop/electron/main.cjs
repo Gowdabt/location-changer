@@ -156,6 +156,45 @@ async function getAndroidDeviceStatus() {
   };
 }
 
+function getHostPlatform() {
+  if (process.platform === "darwin") {
+    return "mac";
+  }
+  if (process.platform === "win32") {
+    return "windows";
+  }
+  if (process.platform === "linux") {
+    return "linux";
+  }
+  return process.platform;
+}
+
+async function getEnvironment() {
+  const [iosStatus, androidStatus] = await Promise.all([
+    getIosDeviceStatus(),
+    getAndroidDeviceStatus(),
+  ]);
+  const autoPlatform = iosStatus.connected ? "ios" : androidStatus.connected ? "android" : DEFAULT_PLATFORM;
+  return {
+    hostPlatform: getHostPlatform(),
+    autoPlatform,
+    detected: {
+      ios: {
+        connected: iosStatus.connected,
+        authorized: iosStatus.authorized,
+        ready: iosStatus.ready,
+        deviceId: iosStatus.deviceId || null,
+      },
+      android: {
+        connected: androidStatus.connected,
+        authorized: androidStatus.authorized,
+        ready: androidStatus.ready,
+        deviceId: androidStatus.deviceId || null,
+      },
+    },
+  };
+}
+
 async function applyIosPoint(point) {
   await execFileAsync("pymobiledevice3", [
     "developer",
@@ -271,6 +310,7 @@ ipcMain.handle("app:setupChecks", async (_event, platform = DEFAULT_PLATFORM) =>
 ipcMain.handle("app:status", async (_event, platform = DEFAULT_PLATFORM) => {
   return platform === "android" ? getAndroidDeviceStatus() : getIosDeviceStatus();
 });
+ipcMain.handle("app:environment", async () => getEnvironment());
 ipcMain.handle("app:runCommand", async (_event, command) => {
   const platform = command.platform || DEFAULT_PLATFORM;
   if (command.kind === "setPoint") {
