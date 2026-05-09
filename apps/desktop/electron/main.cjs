@@ -47,6 +47,20 @@ async function appendLog(level, source, message, context = undefined) {
   await fs.appendFile(logFile, `${JSON.stringify(payload)}\n`, "utf-8");
 }
 
+async function runPymobileDeviceDeveloperCommand(args) {
+  const result = await execFileAsync("pymobiledevice3", args);
+  const combined = `${result.stdout || ""}\n${result.stderr || ""}`;
+  if (
+    combined.includes("InvalidServiceError") ||
+    combined.includes("Unable to connect to Tunneld")
+  ) {
+    throw new Error(
+      "iOS developer tunnel is required. Start it with: sudo python3 -m pymobiledevice3 remote tunneld",
+    );
+  }
+  return result;
+}
+
 async function runIosSetupChecks() {
   const [xcrun, pymobiledevice3] = await Promise.all([
     hasCommand("xcrun"),
@@ -89,16 +103,31 @@ async function runAndroidSetupChecks() {
 async function resolveDeviceId() {
   try {
     const { stdout } = await execFileAsync("pymobiledevice3", ["usbmux", "list"]);
-    const line = stdout
-      .split("\n")
-      .find((item) => item.includes("SerialNumber") || item.includes("UDID"));
-    if (!line) {
+    const parsed = JSON.parse(stdout);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const first = parsed[0];
+      if (typeof first?.Identifier === "string" && first.Identifier.length > 0) {
+        return first.Identifier;
+      }
+      if (typeof first?.UniqueDeviceID === "string" && first.UniqueDeviceID.length > 0) {
+        return first.UniqueDeviceID;
+      }
+    }
+    return null;
+  } catch {
+    try {
+      const { stdout } = await execFileAsync("pymobiledevice3", ["usbmux", "list"]);
+      const line = stdout
+        .split("\n")
+        .find((item) => item.includes("Identifier") || item.includes("UniqueDeviceID"));
+      if (!line) {
+        return null;
+      }
+      const match = line.match(/[A-Za-z0-9-]{8,}/);
+      return match ? match[0] : null;
+    } catch {
       return null;
     }
-    const match = line.match(/[A-Fa-f0-9-]{8,}/);
-    return match ? match[0] : null;
-  } catch {
-    return null;
   }
 }
 
@@ -196,14 +225,12 @@ async function getEnvironment() {
 }
 
 async function applyIosPoint(point) {
-  await execFileAsync("pymobiledevice3", [
+  await runPymobileDeviceDeveloperCommand([
     "developer",
     "dvt",
     "simulate-location",
     "set",
-    "--lat",
     `${point.lat}`,
-    "--lon",
     `${point.lng}`,
   ]);
   await appendLog("info", "ios-main", "Applied simulated point", point);
@@ -211,7 +238,7 @@ async function applyIosPoint(point) {
 
 async function clearIosLocation() {
   try {
-    await execFileAsync("pymobiledevice3", [
+    await runPymobileDeviceDeveloperCommand([
       "developer",
       "dvt",
       "simulate-location",

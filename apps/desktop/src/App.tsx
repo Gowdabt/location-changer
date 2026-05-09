@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { MapContainer, Marker, TileLayer, useMapEvents } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
 import "./App.css";
 
 type SetupCheck = { key: string; ok: boolean; message: string; fixHint?: string };
@@ -25,6 +27,27 @@ type Presets = {
 };
 
 const initialPresets: Presets = { places: [], routes: [] };
+const DEFAULT_POINT: GeoPoint = { lat: 12.9716, lng: 77.5946 };
+
+function MapClickSync({
+  point,
+  onPick,
+}: {
+  point: GeoPoint;
+  onPick: (point: GeoPoint) => void;
+}) {
+  const map = useMapEvents({
+    click(event) {
+      onPick({ lat: event.latlng.lat, lng: event.latlng.lng });
+    },
+  });
+
+  useEffect(() => {
+    map.setView([point.lat, point.lng], map.getZoom(), { animate: true });
+  }, [map, point]);
+
+  return null;
+}
 
 function App() {
   const [platformMode, setPlatformMode] = useState<"auto" | "ios" | "android">("auto");
@@ -41,7 +64,13 @@ function App() {
   const [tickMs, setTickMs] = useState(1000);
   const [loopRoute, setLoopRoute] = useState(true);
 
-  const parsedPoint = useMemo(() => ({ lat: Number(lat), lng: Number(lng) }), [lat, lng]);
+  const parsedPoint = useMemo(() => {
+    const next = { lat: Number(lat), lng: Number(lng) };
+    if (Number.isNaN(next.lat) || Number.isNaN(next.lng)) {
+      return DEFAULT_POINT;
+    }
+    return next;
+  }, [lat, lng]);
 
   const refresh = async () => {
     const env = await window.locationApp.environment();
@@ -95,12 +124,32 @@ function App() {
     setPresets(next);
   };
 
+  const deletePlace = async (id: string) => {
+    const next = {
+      ...presets,
+      places: presets.places.filter((place) => place.id !== id),
+    };
+    await window.locationApp.savePresets(next);
+    setPresets(next);
+  };
+
+  const selectMapPoint = (point: GeoPoint) => {
+    setLat(point.lat.toFixed(6));
+    setLng(point.lng.toFixed(6));
+  };
+
   return (
     <main className="layout">
       <header className="header">
-        <h1>Location Changer (Mac)</h1>
+        <div>
+          <h1>Location Changer</h1>
+          <p className="subtle">Visual location simulator for iOS and Android testing</p>
+        </div>
         <div className="inline">
-          <select value={platformMode} onChange={(e) => setPlatformMode(e.target.value as "auto" | "ios" | "android")}>
+          <select
+            value={platformMode}
+            onChange={(e) => setPlatformMode(e.target.value as "auto" | "ios" | "android")}
+          >
             <option value="auto">Auto Detect Device</option>
             <option value="ios">iOS / iPadOS</option>
             <option value="android">Android</option>
@@ -112,7 +161,8 @@ function App() {
       <section className="card">
         <h2>Device Status</h2>
         <p>
-          Host: <strong>{environment?.hostPlatform ?? "unknown"}</strong> | Active platform: <strong>{activePlatform}</strong>
+          Host: <strong>{environment?.hostPlatform ?? "unknown"}</strong> | Active platform:{" "}
+          <strong>{activePlatform}</strong>
         </p>
         <p>
           Detected iOS: {String(environment?.detected.ios.connected ?? false)} | Detected Android:{" "}
@@ -127,33 +177,60 @@ function App() {
         <ul>
           {checks.map((check) => (
             <li key={check.key}>
-              <strong>{check.ok ? "OK" : "Fix"}:</strong> {check.message}
-              {check.fixHint ? ` (${check.fixHint})` : ""}
+              <strong>{check.ok ? "OK" : "Fix"}:</strong> {check.ok ? `${check.key} available` : check.message}
+              {!check.ok && check.fixHint ? ` (${check.fixHint})` : ""}
             </li>
           ))}
         </ul>
       </section>
 
-      <section className="card grid">
+      <section className="card mapCard">
+        <div className="mapHeader">
+          <h2>Map Picker</h2>
+          <span>Click map to set Latitude/Longitude</span>
+        </div>
+        <div className="mapWrap">
+          <MapContainer center={[parsedPoint.lat, parsedPoint.lng]} zoom={14} scrollWheelZoom className="map">
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            <Marker position={[parsedPoint.lat, parsedPoint.lng]} />
+            <MapClickSync point={parsedPoint} onPick={selectMapPoint} />
+          </MapContainer>
+        </div>
+      </section>
+
+      <section className="card grid twoCol">
         <div>
           <h2>Teleport</h2>
-          <label>Latitude<input value={lat} onChange={(e) => setLat(e.target.value)} /></label>
-          <label>Longitude<input value={lng} onChange={(e) => setLng(e.target.value)} /></label>
+          <label>
+            Latitude
+            <input value={lat} onChange={(e) => setLat(e.target.value)} />
+          </label>
+          <label>
+            Longitude
+            <input value={lng} onChange={(e) => setLng(e.target.value)} />
+          </label>
           <button onClick={() => void runTeleport()}>Set Location</button>
           <div className="inline">
             <input value={name} onChange={(e) => setName(e.target.value)} />
             <button onClick={() => void savePlace()}>Save Place</button>
           </div>
-          <ul>
+          <ul className="chipList">
             {presets.places.map((place) => (
-              <li key={place.id}>
+              <li key={place.id} className="chipItem">
                 <button
+                  className="chipSelect"
                   onClick={() => {
                     setLat(`${place.point.lat}`);
                     setLng(`${place.point.lng}`);
                   }}
                 >
                   {place.name}
+                </button>
+                <button className="chipDelete" onClick={() => void deletePlace(place.id)}>
+                  Delete
                 </button>
               </li>
             ))}
@@ -163,16 +240,37 @@ function App() {
         <div>
           <h2>Route Mode</h2>
           <textarea value={routeText} onChange={(e) => setRouteText(e.target.value)} />
-          <label>Tick ms<input type="number" value={tickMs} onChange={(e) => setTickMs(Number(e.target.value))} /></label>
+          <label>
+            Tick ms
+            <input type="number" value={tickMs} onChange={(e) => setTickMs(Number(e.target.value))} />
+          </label>
           <label className="checkbox">
             <input type="checkbox" checked={loopRoute} onChange={(e) => setLoopRoute(e.target.checked)} />
             Loop route
           </label>
           <div className="actions">
             <button onClick={() => void runRoute()}>Start Route</button>
-            <button onClick={() => void window.locationApp.runCommand({ platform: activePlatform, kind: "pause" })}>Pause</button>
-            <button onClick={() => void window.locationApp.runCommand({ platform: activePlatform, kind: "resume" })}>Resume</button>
-            <button onClick={() => void window.locationApp.runCommand({ platform: activePlatform, kind: "stop" })}>Stop</button>
+            <button
+              onClick={() =>
+                void window.locationApp.runCommand({ platform: activePlatform, kind: "pause" })
+              }
+            >
+              Pause
+            </button>
+            <button
+              onClick={() =>
+                void window.locationApp.runCommand({ platform: activePlatform, kind: "resume" })
+              }
+            >
+              Resume
+            </button>
+            <button
+              onClick={() =>
+                void window.locationApp.runCommand({ platform: activePlatform, kind: "stop" })
+              }
+            >
+              Stop
+            </button>
           </div>
         </div>
       </section>
