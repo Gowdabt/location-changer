@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs/promises");
+const { spawn } = require("node:child_process");
 const {
   runCommand,
   assertNoTunneldFailure,
@@ -11,11 +12,15 @@ const DEFAULT_PLATFORM = "ios";
 
 const state = {
   timer: null,
+  stickyTimer: null,
+  iosSessionProcess: null,
   route: [],
   cursor: 0,
   loop: false,
   tickMs: 1000,
   paused: false,
+  lastPoint: null,
+  lastPlatform: null,
 };
 
 function getDataPaths() {
@@ -68,11 +73,57 @@ async function hasCommand(command) {
 }
 
 async function runPymobileDeviceDeveloperCommand(args) {
-  return runCommand("pymobiledevice3", args, {
-    retries: 1,
-    transientMatcher: isTransientError,
-    successGuard: assertNoTunneldFailure,
-  });
+  const tunnelInfoBefore = await isTunnelRunning();
+  if (tunnelInfoBefore.running) {
+    const responsive = await isTunnelResponsive();
+    if (!responsive) {
+      try {
+        await restartTunnelNonInteractive();
+      } catch {
+        // If sudo is not cached, we'll continue and provide actionable error below.
+      }
+    }
+  }
+  try {
+    return await runCommand("pymobiledevice3", args, {
+      timeoutMs: 30000,
+      retries: 4,
+      retryDelayMs: 1500,
+      transientMatcher: isTransientError,
+      successGuard: assertNoTunneldFailure,
+    });
+  } catch (error) {
+    const stderr = `${error?.stderr || ""}`;
+    const looksLikeTunnelHandshakeTimeout =
+      stderr.includes("InvalidServiceError") &&
+      (error?.code === 120 || error?.killed === true);
+    if (looksLikeTunnelHandshakeTimeout) {
+      // Self-heal path: if sudo credentials are cached, restart tunneld and retry once.
+      try {
+        await restartTunnelNonInteractive();
+        return await runCommand("pymobiledevice3", args, {
+          timeoutMs: 30000,
+          retries: 1,
+          retryDelayMs: 1000,
+          transientMatcher: isTransientError,
+          successGuard: assertNoTunneldFailure,
+        });
+      } catch {
+        // Fall through to user-facing guidance when sudo is not cached or restart fails.
+      }
+      const tunnelInfo = await isTunnelRunning();
+      const tunnelResponsive = tunnelInfo.running ? await isTunnelResponsive() : false;
+      const tunnelHint = tunnelInfo.running
+        ? tunnelResponsive
+          ? "Tunnel is responsive but device service handoff is failing. Reconnect iPhone and retry."
+          : "Tunnel process is running but not responding. Restart tunnel and reconnect iPhone."
+        : "Tunnel is not running.";
+      throw new Error(
+        `${tunnelHint} Start it with: sudo python3 -m pymobiledevice3 remote tunneld`,
+      );
+    }
+    throw error;
+  }
 }
 
 async function runIosSetupChecks() {
@@ -102,6 +153,78 @@ async function resolveDeviceId() {
     // no-op
   }
   return null;
+}
+
+async function getRequiredIosUdid() {
+  const udid = await resolveDeviceId();
+  if (!udid) {
+    throw new Error("No iOS device detected. Reconnect iPhone and trust this computer.");
+  }
+  return udid;
+}
+
+function stopIosSessionProcess() {
+  if (state.iosSessionProcess && !state.iosSessionProcess.killed) {
+    try {
+      state.iosSessionProcess.kill("SIGTERM");
+    } catch {
+      // no-op
+    }
+  }
+  state.iosSessionProcess = null;
+}
+
+async function startIosSessionProcess(point) {
+  stopIosSessionProcess();
+  const udid = await getRequiredIosUdid();
+  const args = [
+    "developer",
+    "dvt",
+    "simulate-location",
+    "set",
+    "--udid",
+    udid,
+    "--tunnel",
+    udid,
+    `${point.lat}`,
+    `${point.lng}`,
+  ];
+  const child = spawn("pymobiledevice3", args, { stdio: ["ignore", "pipe", "pipe"] });
+  state.iosSessionProcess = child;
+  let stderrBuffer = "";
+  if (child.stderr) {
+    child.stderr.on("data", (chunk) => {
+      stderrBuffer += chunk.toString();
+    });
+  }
+  if (child.stdout) {
+    child.stdout.on("data", () => {
+      // keep pipe drained; command is long-running
+    });
+  }
+
+  await new Promise((resolve, reject) => {
+    const settleTimer = setTimeout(() => resolve(undefined), 1800);
+    const onError = (error) => {
+      clearTimeout(settleTimer);
+      reject(error);
+    };
+    const onExit = (code, signal) => {
+      clearTimeout(settleTimer);
+      if (state.iosSessionProcess === child) state.iosSessionProcess = null;
+      const details = stderrBuffer.trim();
+      reject(
+        new Error(
+          details ||
+            `iOS location session exited unexpectedly (code=${String(code)}, signal=${String(
+              signal,
+            )})`,
+        ),
+      );
+    };
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
 }
 
 async function getIosDeviceStatus() {
@@ -165,6 +288,35 @@ async function isTunnelRunning() {
   }
 }
 
+async function isTunnelResponsive() {
+  try {
+    await runCommand("curl", ["-fsS", "http://127.0.0.1:49151/"], { timeoutMs: 2500 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function restartTunnelNonInteractive() {
+  await runCommand("bash", ["-lc", "sudo -n true"], { timeoutMs: 2500 });
+  try {
+    await runCommand("pkill", ["-f", "python3 -m pymobiledevice3 remote tunneld"], {
+      timeoutMs: 4000,
+    });
+  } catch {
+    // no-op
+  }
+  await runCommand(
+    "bash",
+    [
+      "-lc",
+      "nohup sudo -n python3 -m pymobiledevice3 remote tunneld > /tmp/location-changer-tunneld.log 2>&1 &",
+    ],
+    { timeoutMs: 5000 },
+  );
+  await runCommand("bash", ["-lc", "sleep 1.5"], { timeoutMs: 3000 });
+}
+
 async function safeCommandOutput(command, args) {
   try {
     const result = await runCommand(command, args, { timeoutMs: 4000 });
@@ -178,17 +330,16 @@ async function safeCommandOutput(command, args) {
   }
 }
 
-async function applyIosPoint(point) {
-  await runPymobileDeviceDeveloperCommand(["developer", "dvt", "simulate-location", "set", `${point.lat}`, `${point.lng}`]);
-  await appendLog("info", "ios-main", "Applied simulated point", point);
+async function applyIosPoint(point, options = {}) {
+  const { silent = false } = options;
+  await startIosSessionProcess(point);
+  if (!silent) {
+    await appendLog("info", "ios-main", "Applied simulated point", point);
+  }
 }
 
 async function clearIosLocation() {
-  try {
-    await runPymobileDeviceDeveloperCommand(["developer", "dvt", "simulate-location", "clear"]);
-  } catch {
-    await appendLog("warn", "ios-main", "Could not clear simulated location");
-  }
+  stopIosSessionProcess();
 }
 
 async function applyAndroidPoint(point) {
@@ -203,6 +354,27 @@ function stopRouteTimer() {
     clearInterval(state.timer);
     state.timer = null;
   }
+}
+
+function stopStickyTimer() {
+  if (state.stickyTimer) {
+    clearInterval(state.stickyTimer);
+    state.stickyTimer = null;
+  }
+}
+
+function startStickyTimer(platform) {
+  stopStickyTimer();
+  if (platform !== "ios" || !state.lastPoint || state.iosSessionProcess) return;
+  // iOS can briefly snap back to real GPS; periodic re-apply keeps it pinned.
+  state.stickyTimer = setInterval(async () => {
+    if (!state.lastPoint || state.route.length > 0) return;
+    try {
+      await applyIosPoint(state.lastPoint, { silent: true });
+    } catch (error) {
+      await appendLog("warn", "ios-main", error.message || "Sticky location re-apply failed");
+    }
+  }, 3500);
 }
 
 function startRouteTimer(platform) {
@@ -275,11 +447,13 @@ async function getHealth() {
     safeCommandOutput("pymobiledevice3", ["usbmux", "list"]),
     safeCommandOutput("adb", ["devices"]),
   ]);
+  const tunnelResponsive = tunnelInfo.running ? await isTunnelResponsive() : false;
   return {
     environment,
     checks: { ios: iosChecks, android: androidChecks },
     services: {
       tunneld: tunnelInfo.running,
+      tunneldResponsive: tunnelResponsive,
       tunneldPid: tunnelInfo.pid,
       xcodePath: xcodePath.ok ? xcodePath.stdout : xcodePath.stderr,
       xcodeVersion: xcodeVersion.ok ? xcodeVersion.stdout : xcodeVersion.stderr,
@@ -293,8 +467,16 @@ async function getHealth() {
 
 async function runRepairAction(action) {
   if (action === "start-tunneld") {
-    await runCommand("bash", ["-lc", "nohup sudo python3 -m pymobiledevice3 remote tunneld > /tmp/location-changer-tunneld.log 2>&1 &"], { timeoutMs: 5000 });
-    return { ok: true, message: "Requested tunneld start in Terminal" };
+    try {
+      await restartTunnelNonInteractive();
+      return { ok: true, message: "Started tunneld" };
+    } catch {
+      return {
+        ok: false,
+        message:
+          "Could not start tunneld without password prompt. Run ./start.sh once and enter sudo password.",
+      };
+    }
   }
   if (action === "stop-tunneld") {
     try {
@@ -304,10 +486,15 @@ async function runRepairAction(action) {
   }
   if (action === "restart-tunneld") {
     try {
-      await runCommand("pkill", ["-f", "python3 -m pymobiledevice3 remote tunneld"], { timeoutMs: 4000 });
-    } catch {}
-    await runCommand("bash", ["-lc", "nohup sudo python3 -m pymobiledevice3 remote tunneld > /tmp/location-changer-tunneld.log 2>&1 &"], { timeoutMs: 5000 });
-    return { ok: true, message: "Restarted tunneld" };
+      await restartTunnelNonInteractive();
+      return { ok: true, message: "Restarted tunneld" };
+    } catch {
+      return {
+        ok: false,
+        message:
+          "Could not restart tunneld without password prompt. Run ./start.sh once and enter sudo password.",
+      };
+    }
   }
   if (action === "rerun-checks") {
     return { ok: true, message: "Checks refreshed" };
@@ -372,11 +559,15 @@ ipcMain.handle("app:saveSettings", async (_event, payload) => saveSettings(paylo
 ipcMain.handle("app:runCommand", async (_event, command) => {
   const platform = command.platform || DEFAULT_PLATFORM;
   if (command.kind === "setPoint") {
+    state.lastPoint = command.point;
+    state.lastPlatform = platform;
     if (platform === "android") await applyAndroidPoint(command.point);
     else await applyIosPoint(command.point);
+    if (platform !== "ios") startStickyTimer(platform);
     return { ok: true };
   }
   if (command.kind === "startRoute") {
+    stopStickyTimer();
     state.route = command.route.points || [];
     state.cursor = 0;
     state.loop = Boolean(command.route.loop);
@@ -390,9 +581,13 @@ ipcMain.handle("app:runCommand", async (_event, command) => {
   if (command.kind === "resume") return (state.paused = false), { ok: true };
   if (command.kind === "stop") {
     stopRouteTimer();
+    stopStickyTimer();
+    stopIosSessionProcess();
     state.route = [];
     state.cursor = 0;
     state.paused = false;
+    state.lastPoint = null;
+    state.lastPlatform = null;
     if (platform === "ios") await clearIosLocation();
     await appendLog("info", `${platform}-main`, "Route simulation stopped");
     return { ok: true };
@@ -414,5 +609,6 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
+  stopIosSessionProcess();
   if (process.platform !== "darwin") app.quit();
 });

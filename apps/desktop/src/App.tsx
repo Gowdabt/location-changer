@@ -100,6 +100,7 @@ function App() {
   const [jitterEnabled, setJitterEnabled] = useState(false);
   const [mapZoom, setMapZoom] = useState(14);
   const [mapCenter, setMapCenter] = useState<GeoPoint>(DEFAULT_POINT);
+  const [lastSetLocationInfo, setLastSetLocationInfo] = useState<string>("");
   const saveTimer = useRef<number | null>(null);
 
   const parsedPoint = useMemo(() => {
@@ -211,7 +212,10 @@ function App() {
   const runTeleport = async () => {
     try {
       await window.locationApp.runCommand({ platform: activePlatform, kind: "setPoint", point: parsedPoint });
-      pushToast("success", "Location applied");
+      const now = new Date().toLocaleTimeString();
+      const coords = `${parsedPoint.lat.toFixed(6)}, ${parsedPoint.lng.toFixed(6)}`;
+      setLastSetLocationInfo(`Location set to ${coords} at ${now}`);
+      pushToast("success", `Location set: ${coords}`);
       await refresh();
     } catch (error) {
       pushToast("error", error instanceof Error ? error.message : "Failed to apply location");
@@ -514,6 +518,7 @@ function App() {
             <input value={lng} onChange={(event) => setLng(event.target.value)} />
           </label>
           <button onClick={() => void runTeleport()}>Set Location</button>
+          {lastSetLocationInfo ? <p className="subtle">{lastSetLocationInfo}</p> : null}
           <div className="inline">
             <input value={name} onChange={(event) => setName(event.target.value)} />
             <button onClick={() => void savePlace()}>Save Place</button>

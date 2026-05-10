@@ -89,12 +89,26 @@ flowchart TD
   - install `pymobiledevice3` via `pip3` if missing
   - install `adb` via Homebrew if missing (`brew install android-platform-tools`)
 - If a dependency cannot be auto-installed (for example Xcode missing), the script prints the exact command to run.
+- Tunnel mode:
+  - default is external tunnel mode: `USE_EXTERNAL_TUNNEL=1`
+  - in this mode, startup expects `tunneld` to already be running and healthy
+  - to let `start.sh` manage tunnel itself, run with `USE_EXTERNAL_TUNNEL=0`
 
 ## Run locally
 
 ```bash
 cd /Users/hbt/HarshithGowda/Apps/location-changer
+# terminal A (keep this running)
+sudo python3 -m pymobiledevice3 remote tunneld
+
+# terminal B
 ./start.sh
+```
+
+Optional (legacy auto-managed tunnel):
+
+```bash
+USE_EXTERNAL_TUNNEL=0 ./start.sh
 ```
 
 ## Test commands
@@ -115,7 +129,11 @@ npm test
 ## Troubleshooting
 
 - iOS detected but location not applied:
-  - ensure tunnel is running: `sudo python3 -m pymobiledevice3 remote tunneld`
+  - run tunnel in separate terminal and keep it open:
+    - `sudo python3 -m pymobiledevice3 remote tunneld`
+  - verify tunnel health:
+    - `curl -fsS http://127.0.0.1:49151/`
+  - reconnect iPhone (unplug/replug), unlock it, and accept trust prompts
 - `No such option: --lat`:
   - update app to latest commit; current app uses positional args
 - Android route not applying:

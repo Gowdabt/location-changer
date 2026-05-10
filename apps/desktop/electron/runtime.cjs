@@ -46,10 +46,7 @@ function getCombinedOutput(resultOrError) {
 
 function assertNoTunneldFailure(resultOrError) {
   const combined = getCombinedOutput(resultOrError);
-  if (
-    combined.includes("InvalidServiceError") ||
-    combined.includes("Unable to connect to Tunneld")
-  ) {
+  if (combined.includes("Unable to connect to Tunneld")) {
     throw new Error(
       "iOS developer tunnel is required. Start it with: sudo python3 -m pymobiledevice3 remote tunneld",
     );
@@ -59,9 +56,12 @@ function assertNoTunneldFailure(resultOrError) {
 function isTransientError(error) {
   const combined = getCombinedOutput(error);
   return (
+    combined.includes("InvalidServiceError") ||
     combined.includes("Broken pipe") ||
     combined.includes("timed out") ||
-    combined.includes("temporarily unavailable")
+    combined.includes("temporarily unavailable") ||
+    error?.code === 120 ||
+    error?.killed === true
   );
 }
 

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
+USE_EXTERNAL_TUNNEL="${USE_EXTERNAL_TUNNEL:-1}"
 
 ensure_command() {
   local cmd="$1"
@@ -59,9 +60,26 @@ ensure_adb() {
 }
 
 ensure_tunneld() {
+  if [ "$USE_EXTERNAL_TUNNEL" = "1" ]; then
+    echo "External tunnel mode enabled (USE_EXTERNAL_TUNNEL=1)."
+    if pgrep -f "python3 -m pymobiledevice3 remote tunneld" >/dev/null 2>&1 && \
+      curl -fsS "http://127.0.0.1:49151/" >/dev/null 2>&1; then
+      echo "External tunneld is running and responsive."
+      return
+    fi
+    echo "External tunnel not ready."
+    echo "Run this in another terminal and keep it open:"
+    echo "  sudo python3 -m pymobiledevice3 remote tunneld"
+    exit 1
+  fi
+
   if pgrep -f "python3 -m pymobiledevice3 remote tunneld" >/dev/null 2>&1; then
-    echo "pymobiledevice3 tunneld is already running."
-    return
+    if curl -fsS "http://127.0.0.1:49151/" >/dev/null 2>&1; then
+      echo "pymobiledevice3 tunneld is already running and responsive."
+      return
+    fi
+    echo "tunneld process is present but unhealthy; restarting..."
+    pkill -f "python3 -m pymobiledevice3 remote tunneld" >/dev/null 2>&1 || true
   fi
 
   echo "Authenticating sudo for tunneld startup..."
@@ -73,7 +91,12 @@ ensure_tunneld() {
   sleep 2
 
   if pgrep -f "python3 -m pymobiledevice3 remote tunneld" >/dev/null 2>&1; then
-    echo "tunneld started successfully."
+    if curl -fsS "http://127.0.0.1:49151/" >/dev/null 2>&1; then
+      echo "tunneld started successfully."
+    else
+      echo "tunneld process started but health check failed. Check logs at .logs/tunneld.log"
+      exit 1
+    fi
   else
     echo "Failed to start tunneld. Check logs at .logs/tunneld.log"
     exit 1
@@ -91,4 +114,8 @@ ensure_adb
 ensure_tunneld
 
 echo "Starting Location Changer app..."
+if [ "$USE_EXTERNAL_TUNNEL" = "1" ]; then
+  echo "Tip: running with external tunnel mode."
+  echo "Set USE_EXTERNAL_TUNNEL=0 to allow this script to manage tunneld."
+fi
 npm run dev
