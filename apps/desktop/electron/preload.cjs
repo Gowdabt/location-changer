@@ -15,4 +15,16 @@ contextBridge.exposeInMainWorld("locationApp", {
   saveSettings: (payload) => ipcRenderer.invoke("app:saveSettings", payload),
   readLogs: () => ipcRenderer.invoke("app:readLogs"),
   exportDiagnostics: () => ipcRenderer.invoke("app:exportDiagnostics"),
+  // Remote Control methods
+  getRemoteControlStatus: () => ipcRenderer.invoke("app:getRemoteControlStatus"),
+  setRemoteControlEnabled: (enabled) => ipcRenderer.invoke("app:setRemoteControlEnabled", enabled),
+  setWiFiModeEnabled: (enabled) => ipcRenderer.invoke("app:setWiFiModeEnabled", enabled),
+  generateQRCode: (url) => ipcRenderer.invoke("app:generateQRCode", url),
+  pairWiFiDevice: () => ipcRenderer.invoke("app:pairWiFiDevice"),
+  // Event listener for main->renderer notifications
+  onEvent: (channel, callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on(channel, handler);
+    return () => ipcRenderer.removeListener(channel, handler);
+  },
 });

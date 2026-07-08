@@ -50,6 +50,12 @@ const locationAppMock = {
   saveSettings: vi.fn(async () => ({ ok: true })),
   readLogs: vi.fn(async () => []),
   exportDiagnostics: vi.fn(async () => ({ ok: true, path: "/tmp/d.json" })),
+  getRemoteControlStatus: vi.fn(async () => ({ enabled: false, port: 8080, url: null, authToken: "", urlSchemeEnabled: false, wifiEnabled: false })),
+  setRemoteControlEnabled: vi.fn(async () => ({ ok: true })),
+  setWiFiModeEnabled: vi.fn(async () => ({ ok: true })),
+  generateQRCode: vi.fn(async () => ""),
+  pairWiFiDevice: vi.fn(async () => ({ ok: false, error: "Not implemented" })),
+  onEvent: vi.fn((_channel: string, _callback: unknown) => () => undefined),
 };
 
 describe("App", () => {

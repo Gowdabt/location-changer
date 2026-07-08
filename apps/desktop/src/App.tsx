@@ -101,6 +101,16 @@ function App() {
   const [mapZoom, setMapZoom] = useState(14);
   const [mapCenter, setMapCenter] = useState<GeoPoint>(DEFAULT_POINT);
   const [lastSetLocationInfo, setLastSetLocationInfo] = useState<string>("");
+  const [remoteStatus, setRemoteStatus] = useState<{
+    enabled: boolean;
+    port: number;
+    url: string | null;
+    authToken: string;
+    urlSchemeEnabled: boolean;
+    wifiEnabled: boolean;
+  } | null>(null);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>("");
+  const [showWiFiPairing, setShowWiFiPairing] = useState(false);
   const saveTimer = useRef<number | null>(null);
 
   const parsedPoint = useMemo(() => {
@@ -117,12 +127,13 @@ function App() {
   const refresh = async () => {
     const env = await window.locationApp.environment();
     const targetPlatform = platformMode === "auto" ? env.autoPlatform : platformMode;
-    const [statusValue, checksValue, logsValue, presetsValue, healthValue] = await Promise.all([
+    const [statusValue, checksValue, logsValue, presetsValue, healthValue, remoteStatusValue] = await Promise.all([
       window.locationApp.status(targetPlatform),
       window.locationApp.setupChecks(targetPlatform),
       window.locationApp.readLogs(),
       window.locationApp.loadPresets(),
       window.locationApp.health(),
+      window.locationApp.getRemoteControlStatus(),
     ]);
     setEnvironment(env);
     setHealth(healthValue as unknown as Health);
@@ -131,10 +142,38 @@ function App() {
     setChecks(checksValue);
     setLogs(logsValue);
     setPresets(presetsValue);
+    setRemoteStatus(remoteStatusValue);
+
+    // Generate QR code if remote enabled
+    if (remoteStatusValue?.enabled && remoteStatusValue?.url) {
+      const qr = await window.locationApp.generateQRCode(
+        `${remoteStatusValue.url}?token=${remoteStatusValue.authToken}`
+      );
+      setQrCodeDataUrl(qr);
+    }
   };
 
   useEffect(() => {
     void refresh();
+  }, [platformMode]);
+
+  // Periodic device status polling — keeps connection status fresh
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      void (async () => {
+        try {
+          const env = await window.locationApp.environment();
+          const targetPlatform = platformMode === "auto" ? env.autoPlatform : platformMode;
+          const statusValue = await window.locationApp.status(targetPlatform);
+          setEnvironment(env);
+          setActivePlatform(targetPlatform);
+          setStatus(statusValue);
+        } catch {
+          // Silently ignore polling errors
+        }
+      })();
+    }, 8000);
+    return () => clearInterval(pollInterval);
   }, [platformMode]);
 
   useEffect(() => {
@@ -208,6 +247,20 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  // Subscribe to iOS location hold watchdog events
+  useEffect(() => {
+    const unsub1 = window.locationApp.onEvent("ios:reconnecting", (payload) => {
+      pushToast("info", `Reconnecting location hold (attempt ${payload.attempt ?? "?"})...`);
+    });
+    const unsub2 = window.locationApp.onEvent("ios:reconnected", () => {
+      pushToast("success", "Location hold reconnected.");
+    });
+    const unsub3 = window.locationApp.onEvent("ios:sessionFailed", (payload) => {
+      pushToast("error", (payload.message as string) || "Location session failed.");
+    });
+    return () => { unsub1(); unsub2(); unsub3(); };
+  }, []);
 
   const runTeleport = async () => {
     try {
@@ -483,6 +536,134 @@ function App() {
           <summary>Tooling dashboard</summary>
           <pre>{JSON.stringify(health?.services ?? {}, null, 2)}</pre>
         </details>
+      </section>
+
+      <section className="card">
+        <h2>Remote Control & WiFi</h2>
+
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={remoteStatus?.enabled || false}
+            onChange={async (e) => {
+              await window.locationApp.setRemoteControlEnabled(e.target.checked);
+              void refresh();
+            }}
+          />
+          Enable Remote Control Web UI
+        </label>
+
+        {remoteStatus?.enabled && (
+          <>
+            <label>
+              Remote Control URL
+              <div className="inline">
+                <input type="text" value={remoteStatus.url || ""} readOnly style={{ flex: 1 }} />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(remoteStatus.url || "");
+                    pushToast("info", "URL copied to clipboard");
+                  }}
+                >
+                  Copy
+                </button>
+              </div>
+            </label>
+
+            <label>
+              Authentication Token
+              <div className="inline">
+                <input type="text" value={remoteStatus.authToken || ""} readOnly style={{ flex: 1 }} />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(remoteStatus.authToken || "");
+                    pushToast("info", "Token copied to clipboard");
+                  }}
+                >
+                  Copy
+                </button>
+              </div>
+            </label>
+
+            {qrCodeDataUrl && (
+              <div style={{ textAlign: "center", padding: "16px" }}>
+                <img src={qrCodeDataUrl} alt="QR Code" style={{ maxWidth: "256px" }} />
+                <p className="subtle">Scan with iPhone camera to access</p>
+              </div>
+            )}
+
+            <details>
+              <summary>iOS Shortcuts URL Examples</summary>
+              <pre style={{ fontSize: "12px", overflow: "auto" }}>
+                {`Set Location:
+locationchanger://set?lat=37.7749&lng=-122.4194&platform=ios
+
+Start Route:
+locationchanger://start?route=[{"lat":37.7749,"lng":-122.4194}]&tickMs=2000&loop=true
+
+Stop:
+locationchanger://stop?platform=ios`}
+              </pre>
+            </details>
+          </>
+        )}
+
+        <hr style={{ margin: "20px 0", border: "1px solid var(--border)" }} />
+
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={remoteStatus?.wifiEnabled || false}
+            onChange={async (e) => {
+              await window.locationApp.setWiFiModeEnabled(e.target.checked);
+              void refresh();
+            }}
+          />
+          Enable WiFi Tunneling (Wireless Device Control)
+        </label>
+
+        {remoteStatus?.wifiEnabled && (
+          <>
+            <p className="subtle">
+              WiFi mode allows control of iOS devices without USB cable. Device must be paired over WiFi first.
+            </p>
+
+            {!showWiFiPairing && <button onClick={() => setShowWiFiPairing(true)}>Pair iPhone via WiFi</button>}
+
+            {showWiFiPairing && (
+              <div style={{ padding: "16px", background: "var(--card-bg)", borderRadius: "8px" }}>
+                <h3>WiFi Pairing Instructions</h3>
+                <ol style={{ paddingLeft: "20px" }}>
+                  <li>Connect iPhone to Mac via USB</li>
+                  <li>Ensure iPhone and Mac are on same WiFi network</li>
+                  <li>Click "Start Pairing" below</li>
+                  <li>Enter passcode shown on iPhone</li>
+                  <li>Wait for pairing to complete</li>
+                  <li>Disconnect USB cable (WiFi connection will persist)</li>
+                </ol>
+
+                <div className="actions">
+                  <button
+                    onClick={async () => {
+                      pushToast("info", "Starting WiFi pairing...");
+                      const result = await window.locationApp.pairWiFiDevice();
+                      if (result.ok) {
+                        pushToast("success", "WiFi pairing successful!");
+                        setShowWiFiPairing(false);
+                        void refresh();
+                      } else {
+                        pushToast("error", `Pairing failed: ${result.error}`);
+                      }
+                    }}
+                  >
+                    Start Pairing
+                  </button>
+                  <button onClick={() => setShowWiFiPairing(false)}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </section>
 
       <section className="card mapCard">

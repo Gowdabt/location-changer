@@ -54,6 +54,19 @@ declare global {
       saveSettings: (payload: unknown) => Promise<{ ok: boolean }>;
       readLogs: () => Promise<string[]>;
       exportDiagnostics: () => Promise<{ ok: boolean; path?: string }>;
+      getRemoteControlStatus: () => Promise<{
+        enabled: boolean;
+        port: number;
+        url: string | null;
+        authToken: string;
+        urlSchemeEnabled: boolean;
+        wifiEnabled: boolean;
+      }>;
+      setRemoteControlEnabled: (enabled: boolean) => Promise<{ ok: boolean }>;
+      setWiFiModeEnabled: (enabled: boolean) => Promise<{ ok: boolean }>;
+      generateQRCode: (url: string) => Promise<string>;
+      pairWiFiDevice: () => Promise<{ ok: boolean; error?: string }>;
+      onEvent: (channel: string, callback: (payload: Record<string, unknown>) => void) => () => void;
     };
   }
 }

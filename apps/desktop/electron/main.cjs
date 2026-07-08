@@ -14,6 +14,12 @@ const state = {
   timer: null,
   stickyTimer: null,
   iosSessionProcess: null,
+  iosKeepAliveActive: false,
+  iosRestartAttempts: 0,
+  iosRestartTimer: null,
+  iosMaxRestarts: 8,
+  iosBackoffBaseMs: 1000,
+  iosBackoffCapMs: 30000,
   route: [],
   cursor: 0,
   loop: false,
@@ -174,57 +180,170 @@ function stopIosSessionProcess() {
   state.iosSessionProcess = null;
 }
 
-async function startIosSessionProcess(point) {
-  stopIosSessionProcess();
+function stopIosKeepAlive() {
+  state.iosKeepAliveActive = false;
+  state.iosRestartAttempts = 0;
+  if (state.iosRestartTimer) {
+    clearTimeout(state.iosRestartTimer);
+    state.iosRestartTimer = null;
+  }
+}
+
+function startIosKeepAlive() {
+  state.iosKeepAliveActive = true;
+  state.iosRestartAttempts = 0;
+}
+
+function notifyRenderer(channel, payload) {
+  const windows = BrowserWindow.getAllWindows();
+  for (const win of windows) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(channel, payload);
+    }
+  }
+}
+
+function handleIosProcessExit(code, signal) {
+  // Intentional stop — do not restart
+  if (!state.iosKeepAliveActive || !state.lastPoint) return;
+  if (signal === "SIGTERM") return;
+
+  // Max retries exceeded — give up
+  if (state.iosRestartAttempts >= state.iosMaxRestarts) {
+    void appendLog("error", "ios-watchdog", "Max restart attempts reached, giving up", {
+      attempts: state.iosRestartAttempts,
+    });
+    notifyRenderer("ios:sessionFailed", {
+      message: "Location hold failed after multiple retries. Check device connection.",
+    });
+    state.iosKeepAliveActive = false;
+    return;
+  }
+
+  const delay = Math.min(
+    state.iosBackoffBaseMs * Math.pow(2, state.iosRestartAttempts),
+    state.iosBackoffCapMs,
+  );
+  state.iosRestartAttempts += 1;
+
+  void appendLog("warn", "ios-watchdog", `Process exited unexpectedly, restarting in ${delay}ms`, {
+    code,
+    signal,
+    attempt: state.iosRestartAttempts,
+  });
+  notifyRenderer("ios:reconnecting", {
+    attempt: state.iosRestartAttempts,
+    maxAttempts: state.iosMaxRestarts,
+    nextRetryMs: delay,
+  });
+
+  state.iosRestartTimer = setTimeout(async () => {
+    state.iosRestartTimer = null;
+    if (!state.iosKeepAliveActive || !state.lastPoint) return;
+    try {
+      await spawnIosLocationProcess(state.lastPoint);
+      state.iosRestartAttempts = 0;
+      void appendLog("info", "ios-watchdog", "Process restarted successfully");
+      notifyRenderer("ios:reconnected", {});
+    } catch (error) {
+      void appendLog("error", "ios-watchdog", `Restart failed: ${error.message || error}`);
+      handleIosProcessExit(null, null);
+    }
+  }, delay);
+}
+
+async function spawnIosLocationProcess(point) {
   const udid = await getRequiredIosUdid();
-  const args = [
-    "developer",
-    "dvt",
-    "simulate-location",
-    "set",
-    "--udid",
-    udid,
-    "--tunnel",
-    udid,
-    `${point.lat}`,
-    `${point.lng}`,
-  ];
-  const child = spawn("pymobiledevice3", args, { stdio: ["ignore", "pipe", "pipe"] });
-  state.iosSessionProcess = child;
+  // Use our custom Python script that re-applies location every 1 second
+  // within a single DTX session — iOS 26 resets location if not continuously applied
+  const scriptPath = path.join(__dirname, "ios_location_hold.py");
+  const child = spawn("python3", [scriptPath, udid, `${point.lat}`, `${point.lng}`], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let stderrBuffer = "";
+  let stdoutBuffer = "";
   if (child.stderr) {
     child.stderr.on("data", (chunk) => {
       stderrBuffer += chunk.toString();
     });
   }
   if (child.stdout) {
-    child.stdout.on("data", () => {
-      // keep pipe drained; command is long-running
+    child.stdout.on("data", (chunk) => {
+      stdoutBuffer += chunk.toString();
     });
   }
 
   await new Promise((resolve, reject) => {
-    const settleTimer = setTimeout(() => resolve(undefined), 1800);
+    // Wait for the "HOLDING" message which means location is being applied
+    const settleTimer = setTimeout(() => {
+      child.removeListener("exit", onExit);
+      child.removeListener("error", onError);
+      if (stdoutBuffer.includes("HOLDING")) {
+        state.iosSessionProcess = child;
+        child.once("exit", (exitCode, exitSignal) => {
+          if (state.iosSessionProcess === child) {
+            state.iosSessionProcess = null;
+            handleIosProcessExit(exitCode, exitSignal);
+          }
+        });
+        resolve(undefined);
+      } else if (stderrBuffer || stdoutBuffer.includes("ERROR")) {
+        reject(new Error(stderrBuffer || stdoutBuffer || "Failed to start location hold"));
+      } else {
+        // Still waiting — give more time
+        state.iosSessionProcess = child;
+        child.once("exit", (exitCode, exitSignal) => {
+          if (state.iosSessionProcess === child) {
+            state.iosSessionProcess = null;
+            handleIosProcessExit(exitCode, exitSignal);
+          }
+        });
+        resolve(undefined);
+      }
+    }, 10000);
+
+    // Check stdout periodically for early HOLDING signal
+    const earlyCheck = setInterval(() => {
+      if (stdoutBuffer.includes("HOLDING")) {
+        clearInterval(earlyCheck);
+        clearTimeout(settleTimer);
+        child.removeListener("exit", onExit);
+        child.removeListener("error", onError);
+        state.iosSessionProcess = child;
+        child.once("exit", (exitCode, exitSignal) => {
+          if (state.iosSessionProcess === child) {
+            state.iosSessionProcess = null;
+            handleIosProcessExit(exitCode, exitSignal);
+          }
+        });
+        resolve(undefined);
+      }
+    }, 300);
+
     const onError = (error) => {
       clearTimeout(settleTimer);
+      clearInterval(earlyCheck);
       reject(error);
     };
     const onExit = (code, signal) => {
       clearTimeout(settleTimer);
-      if (state.iosSessionProcess === child) state.iosSessionProcess = null;
-      const details = stderrBuffer.trim();
+      clearInterval(earlyCheck);
+      const details = stderrBuffer.trim() || stdoutBuffer.trim();
       reject(
         new Error(
           details ||
-            `iOS location session exited unexpectedly (code=${String(code)}, signal=${String(
-              signal,
-            )})`,
+            `iOS location process exited (code=${String(code)}, signal=${String(signal)})`,
         ),
       );
     };
     child.once("error", onError);
     child.once("exit", onExit);
   });
+}
+
+async function startIosSessionProcess(point) {
+  stopIosSessionProcess();
+  await spawnIosLocationProcess(point);
 }
 
 async function getIosDeviceStatus() {
@@ -238,8 +357,10 @@ async function resolveAndroidDevice() {
   try {
     const { stdout } = await runCommand("adb", ["devices"], { timeoutMs: 6000 });
     const lines = stdout.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("List of devices"));
-    const firstDevice = lines.find((line) => line.endsWith("\tdevice"));
-    const unauthorized = lines.find((line) => line.endsWith("\tunauthorized"));
+    // Only count physical USB devices, not emulators (emulator-XXXX)
+    const physicalLines = lines.filter((line) => !line.startsWith("emulator-"));
+    const firstDevice = physicalLines.find((line) => line.endsWith("\tdevice"));
+    const unauthorized = physicalLines.find((line) => line.endsWith("\tunauthorized"));
     if (firstDevice) return { deviceId: firstDevice.split("\t")[0], state: "device" };
     if (unauthorized) return { deviceId: unauthorized.split("\t")[0], state: "unauthorized" };
   } catch {
@@ -340,6 +461,8 @@ async function applyIosPoint(point, options = {}) {
 
 async function clearIosLocation() {
   stopIosSessionProcess();
+  stopIosKeepAlive();
+  state.lastPoint = null;
 }
 
 async function applyAndroidPoint(point) {
@@ -365,14 +488,14 @@ function stopStickyTimer() {
 
 function startStickyTimer(platform) {
   stopStickyTimer();
-  if (platform !== "ios" || !state.lastPoint || state.iosSessionProcess) return;
-  // iOS can briefly snap back to real GPS; periodic re-apply keeps it pinned.
+  if (platform === "ios" || !state.lastPoint) return;
+  // Android periodic re-apply
   state.stickyTimer = setInterval(async () => {
     if (!state.lastPoint || state.route.length > 0) return;
     try {
-      await applyIosPoint(state.lastPoint, { silent: true });
+      await applyAndroidPoint(state.lastPoint);
     } catch (error) {
-      await appendLog("warn", "ios-main", error.message || "Sticky location re-apply failed");
+      await appendLog("warn", `${platform}-main`, error.message || "Sticky location re-apply failed");
     }
   }, 3500);
 }
@@ -561,13 +684,18 @@ ipcMain.handle("app:runCommand", async (_event, command) => {
   if (command.kind === "setPoint") {
     state.lastPoint = command.point;
     state.lastPlatform = platform;
-    if (platform === "android") await applyAndroidPoint(command.point);
-    else await applyIosPoint(command.point);
-    if (platform !== "ios") startStickyTimer(platform);
+    if (platform === "android") {
+      await applyAndroidPoint(command.point);
+      startStickyTimer(platform);
+    } else {
+      await applyIosPoint(command.point);
+      startIosKeepAlive();
+    }
     return { ok: true };
   }
   if (command.kind === "startRoute") {
     stopStickyTimer();
+    stopIosKeepAlive();
     state.route = command.route.points || [];
     state.cursor = 0;
     state.loop = Boolean(command.route.loop);
@@ -582,6 +710,7 @@ ipcMain.handle("app:runCommand", async (_event, command) => {
   if (command.kind === "stop") {
     stopRouteTimer();
     stopStickyTimer();
+    stopIosKeepAlive();
     stopIosSessionProcess();
     state.route = [];
     state.cursor = 0;
@@ -600,6 +729,11 @@ ipcMain.handle("app:exportPresets", async (_event, payload) => exportPresetsToFi
 ipcMain.handle("app:importPresets", async () => importPresetsFromFile());
 ipcMain.handle("app:readLogs", async () => readLogs());
 ipcMain.handle("app:exportDiagnostics", async () => exportDiagnosticsBundle());
+ipcMain.handle("app:getRemoteControlStatus", async () => ({ enabled: false, port: 8080, url: null, authToken: "", urlSchemeEnabled: false, wifiEnabled: false }));
+ipcMain.handle("app:setRemoteControlEnabled", async () => ({ ok: true }));
+ipcMain.handle("app:setWiFiModeEnabled", async () => ({ ok: true }));
+ipcMain.handle("app:generateQRCode", async () => "");
+ipcMain.handle("app:pairWiFiDevice", async () => ({ ok: false, error: "Not implemented" }));
 
 app.whenReady().then(async () => {
   await createWindow();
@@ -609,6 +743,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
+  stopIosKeepAlive();
   stopIosSessionProcess();
   if (process.platform !== "darwin") app.quit();
 });
