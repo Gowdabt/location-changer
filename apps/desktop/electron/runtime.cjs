@@ -65,9 +65,20 @@ function isTransientError(error) {
   );
 }
 
+function isTunnelConnectionError(output) {
+  return (
+    output.includes("Connect call failed") ||
+    output.includes("OSError") ||
+    output.includes("ConnectionRefusedError") ||
+    output.includes("NoDeviceConnectedError") ||
+    output.includes("errno 64534")
+  );
+}
+
 module.exports = {
   runCommand,
   getCombinedOutput,
   assertNoTunneldFailure,
   isTransientError,
+  isTunnelConnectionError,
 };

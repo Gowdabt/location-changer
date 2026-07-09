@@ -6,6 +6,7 @@ const {
   runCommand,
   assertNoTunneldFailure,
   isTransientError,
+  isTunnelConnectionError,
 } = require("./runtime.cjs");
 
 const DEFAULT_PLATFORM = "ios";
@@ -343,7 +344,42 @@ async function spawnIosLocationProcess(point) {
 
 async function startIosSessionProcess(point) {
   stopIosSessionProcess();
-  await spawnIosLocationProcess(point);
+
+  // Pre-flight tunnel health check
+  const tunnelInfo = await isTunnelRunning();
+  if (tunnelInfo.running) {
+    const responsive = await isTunnelResponsive();
+    if (!responsive) {
+      try {
+        await restartTunnelNonInteractive();
+      } catch {
+        // Continue — will fail with actionable error if tunnel is truly dead
+      }
+    }
+  }
+
+  // Retry loop with tunnel recovery
+  const maxAttempts = 3;
+  let lastError;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      await spawnIosLocationProcess(point);
+      return; // success
+    } catch (error) {
+      lastError = error;
+      const msg = error?.message || error?.stderr || "";
+      if (attempt < maxAttempts - 1 && isTunnelConnectionError(msg)) {
+        await appendLog("warn", "ios-tunnel", `Tunnel error on attempt ${attempt + 1}, restarting tunnel...`, { error: msg });
+        try {
+          await restartTunnelNonInteractive();
+        } catch {
+          // If restart fails, next attempt will likely fail too
+        }
+      }
+    }
+  }
+  throw lastError;
 }
 
 async function getIosDeviceStatus() {
